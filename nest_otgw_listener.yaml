@@ -1,0 +1,106 @@
+# Board: Wemos D1 Mini (ESP8266), using the SLAVE shield of the DIYLESS
+# dual-shield OpenTherm board (the one that faces the thermostat, not the
+# boiler).
+#
+# PURPOSE: lets the Google Nest Heat Link stay physically wired up and keep
+# believing it's driving a real boiler, so it stays usable as a day-to-day
+# thermostat/display, WITHOUT it actually controlling the real boiler. This
+# device answers every OpenTherm request the Nest sends with a plausible,
+# locally-fabricated reply (see components/ot_boiler_emulator) - it never
+# talks to a real boiler at all. It publishes what the Nest is asking for
+# (requested CH/DHW enable, requested boiler flow setpoint) as ordinary HA
+# entities, so Home Assistant can see - but does not have to act on - what
+# the Nest wants. The actual boiler is driven entirely separately and
+# independently by the master-mode esphome-otgw device (otgw.yaml).
+#
+# WIRING: only the Slave shield (faces the thermostat) is used here - the
+# Master shield / GPIO4,5 belong to the other device and are not connected
+# to this board at all.
+#   Slave shield screw terminals -> Nest Heat Link's OpenTherm terminals
+#
+# PIN DIRECTION - PLEASE VERIFY AFTER FLASHING:
+# Exactly like the master-mode device, adapter boards label pins from their
+# own perspective, which can be the reverse of ESPHome's "from the
+# microcontroller's perspective" convention. The pins below (12/13) match
+# this project's own original pre-migration gduteil config for the slave
+# shield, but if the Nest shows no communication / a boiler-fault error
+# after flashing, the first thing to try is swapping in_pin and out_pin.
+# Getting this wrong is safe (just no data), not dangerous - OpenTherm is a
+# low-voltage bus.
+#
+# THIS IS NEW, UNTESTED CUSTOM FIRMWARE (not a stock ESPHome component) -
+# expect to need a debugging pass once it's actually talking to a real Nest.
+
+esphome:
+  name: esphome-nest-otgw
+  friendly_name: Nest OpenTherm Listener
+
+esp8266:
+  board: d1_mini
+
+external_components:
+  - source:
+      type: local
+      path: components
+
+logger:
+
+api:
+  encryption:
+    # Generate a fresh key - do NOT reuse the otgw-master device's key.
+    # Easiest: create this device via the ESPHome dashboard's "New Device"
+    # wizard first (it generates wifi/api secrets for you), then replace its
+    # body with everything below this line. Or generate one yourself with:
+    #   openssl rand -base64 32
+    key: !secret nest_otgw_api_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "Nest OTGW Fallback Hotspot"
+    password: !secret nest_otgw_ap_fallback_password
+
+captive_portal:
+
+ot_boiler_emulator:
+  id: nest_boiler_emulator
+  in_pin: 12    # GPIO12 (D6) - swapped, was 13/D7
+  out_pin: 13   # GPIO13 (D7) - swapped, was 12/D6
+  comms_timeout: 60
+
+sensor:
+  - platform: ot_boiler_emulator
+    ot_boiler_emulator_id: nest_boiler_emulator
+    requested_boiler_setpoint:
+      name: "Nest Requested Boiler Setpoint"
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+binary_sensor:
+  - platform: ot_boiler_emulator
+    ot_boiler_emulator_id: nest_boiler_emulator
+    requested_ch_enable:
+      name: "Nest Requested CH Enable"
+      device_class: heat
+    requested_dhw_enable:
+      name: "Nest Requested DHW Enable"
+      device_class: heat
+    communication_active:
+      name: "Nest Communication Active"
+      device_class: connectivity
+      entity_category: diagnostic
+
+  - platform: status
+    name: "Status"
+    entity_category: diagnostic
+
+button:
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic

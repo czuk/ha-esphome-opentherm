@@ -1,0 +1,197 @@
+# Board: Wemos D1 Mini (ESP8266)
+# DIYLESS ESP8266 OpenTherm Gateway - MASTER SHIELD ONLY, standalone master mode.
+#
+# This REPLACES the previous gduteil/OpenThermGateway "true gateway" config.
+# The Nest Heat Link has been physically disconnected - this firmware drives
+# the boiler directly using ESPHome's own official `opentherm:` component
+# (master-only), with a PID climate loop deciding the boiler flow-temperature
+# setpoint from a whole-house average radiator temperature (pulled in from
+# Home Assistant: sensor.house_average_radiator_temperature).
+#
+# WIRING: only the Master shield (faces the boiler) is used now - the Slave
+# shield / GPIO12,13 are no longer connected to anything and can be ignored.
+#   Master shield screw terminals -> boiler's OpenTherm thermostat terminals
+#
+# PIN DIRECTION - PLEASE VERIFY AFTER FLASHING:
+# ESPHome's own opentherm docs warn that adapter boards label pins from
+# their OWN perspective, which is the REVERSE of ESPHome's "from the
+# microcontroller's perspective" convention. The old gduteil config used
+# pin_boiler_in: GPIO4 (D2), pin_boiler_out: GPIO5 (D1) - matching DIYLESS's
+# own "IN/OUT" silkscreen labels. Per ESPHome's warning, this likely needs
+# to be REVERSED here:
+#   in_pin  = GPIO5 (D1)   <- the shield's own "OUT" pin
+#   out_pin = GPIO4 (D2)   <- the shield's own "IN" pin
+# If there's no communication with the boiler after flashing, the first
+# thing to try is swapping these two pin numbers. Getting this wrong is
+# safe (just no data), not dangerous - OpenTherm is a low-voltage bus.
+
+esphome:
+  name: esphome-otgw
+  friendly_name: OpenTherm Gateway
+
+esp8266:
+  board: d1_mini
+
+logger:
+
+api:
+  encryption:
+    key: !secret otgw_api_key
+
+ota:
+  - platform: esphome
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: otgw Fallback Hotspot
+    password: !secret otgw_ap_fallback_password
+
+captive_portal:
+
+# Official ESPHome component - standalone OpenTherm master. No external
+# component / git pin needed, this ships with ESPHome core.
+opentherm:
+  in_pin: 4    # GPIO4 (D2) - swapped, was 5/D1
+  out_pin: 5   # GPIO5 (D1) - swapped, was 4/D2
+  dhw_enable: true
+
+sensor:
+  - platform: homeassistant
+    id: ch_room_temperature
+    name: "CH Room Temperature (PID Input)"
+    internal: false
+    entity_id: sensor.house_average_radiator_temperature
+    filters:
+      - heartbeat: 10s
+
+  - platform: opentherm
+    rel_mod_level:
+      name: "Boiler Modulation Level"
+    t_boiler:
+      name: "Boiler Flow Temperature"
+    t_ret:
+      name: "Boiler Return Temperature"
+    ch_pressure:
+      name: "CH Water Pressure"
+    t_dhw:
+      name: "Hot Water Temperature"
+    dhw_flow_rate:
+      name: "DHW Flow Rate"
+    t_outside:
+      name: "Outside Temperature (Boiler)"
+    burner_starts:
+      name: "Burner Starts"
+      entity_category: diagnostic
+    burner_operation_hours:
+      name: "Burner Operation Hours"
+      entity_category: diagnostic
+    ch_pump_starts:
+      name: "CH Pump Starts"
+      entity_category: diagnostic
+    ch_pump_operation_hours:
+      name: "CH Pump Operation Hours"
+      entity_category: diagnostic
+
+  # PID loop debug visibility - remove once control_parameters are tuned.
+  - platform: pid
+    climate_id: central_heating_pid
+    name: "PID Result"
+    type: RESULT
+  - platform: pid
+    climate_id: central_heating_pid
+    name: "PID Error"
+    type: ERROR
+  - platform: pid
+    climate_id: central_heating_pid
+    name: "PID Proportional"
+    type: PROPORTIONAL
+  - platform: pid
+    climate_id: central_heating_pid
+    name: "PID Integral"
+    type: INTEGRAL
+  - platform: pid
+    climate_id: central_heating_pid
+    name: "PID Derivative"
+    type: DERIVATIVE
+
+binary_sensor:
+  - platform: opentherm
+    fault_indication:
+      name: "Boiler Fault"
+    ch_active:
+      name: "Heating Active"
+    dhw_active:
+      name: "Hot Water Active"
+    flame_on:
+      name: "Flame On"
+    service_request:
+      name: "Service Required"
+      entity_category: diagnostic
+    low_water_pressure:
+      name: "Low Water Pressure Fault"
+      entity_category: diagnostic
+    flame_fault:
+      name: "Gas Flame Fault"
+      entity_category: diagnostic
+    air_pressure_fault:
+      name: "Air Pressure Fault"
+      entity_category: diagnostic
+    water_over_temp:
+      name: "Water Over-Temperature Fault"
+      entity_category: diagnostic
+
+switch:
+  - platform: opentherm
+    ch_enable:
+      name: "Central Heating Enabled"
+      restore_mode: RESTORE_DEFAULT_ON
+    dhw_enable:
+      name: "Hot Water Enabled"
+      restore_mode: RESTORE_DEFAULT_ON
+
+# Boiler flow-temperature setpoint, driven by the PID climate loop below.
+# min_value/max_value are conservative placeholders - check your boiler's
+# actual maximum permitted CH flow temperature (usually in its manual or on
+# a sticker inside the casing) and adjust. Lower flow temps (e.g. 55-65C)
+# are generally more efficient for a fully-TRV'd system than running near a
+# combi boiler's full ~80-85C rating.
+output:
+  - platform: opentherm
+    t_set:
+      id: t_set
+      min_value: 20
+      max_value: 70
+      zero_means_zero: true
+
+button:
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic
+
+# The actual whole-house thermostat. Target temperature is set by Home
+# Assistant (mirroring input_number.house_target_temperature via an
+# automation - to be added once this firmware is confirmed working).
+# control_parameters are the PID library's own starting-point example
+# values; central heating response is slow, so expect to tune these over
+# real heating cycles rather than trusting them as correct out of the box.
+climate:
+  - platform: pid
+    id: central_heating_pid
+    name: "Central Heating"
+    heat_output: t_set
+    default_target_temperature: 18
+    sensor: ch_room_temperature
+    control_parameters:
+      kp: 0.4
+      ki: 0.004
+      # Default min/max_integral is +/-1 (i.e. the integral term alone can
+      # swing the full output range). That let a long period of overshoot
+      # during testing wind the integral to -80%, fully cancelling out
+      # genuine proportional demand and leaving the boiler idle despite
+      # radiators actively calling for heat. Clamping it tighter means the
+      # integral can still correct steady-state drift but can never again
+      # single-handedly override real demand.
+      min_integral: -0.3
+      max_integral: 0.3
